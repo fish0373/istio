@@ -398,7 +398,7 @@ func TestSomeInvalidCerts(t *testing.T) {
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
 			sc := createCache(t, nil, func(string) {}, security.Options{})
-			si, err := sc.generateRootCertFromExistingFile(tc.certPath, "dummy", false)
+			si, err := sc.generateRootCertFromExistingFile(tc.certPath, "dummy", false, "")
 			if tc.validCerts == 0 {
 				if si != nil || err == nil {
 					t.Fatalf("Expected no valid certs, but got %v and error %v", si, err)

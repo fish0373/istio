@@ -596,8 +596,9 @@ func (sc *SecretManagerClient) keyCertificateExist(certPath, keyPath string) boo
 // Although rfc5280 does not allow negative serial numbers, but does require graceful handling
 // (https://datatracker.ietf.org/doc/html/rfc5280#section-4.1.2.2)
 // If there is an invalid cert, we ignore it and only error if there are no valid certs.
-func (sc *SecretManagerClient) generateRootCertFromExistingFile(rootCertPath, resourceName string, workload bool) (*security.SecretItem, error) {
+func (sc *SecretManagerClient) generateRootCertFromExistingFile(rootCertPath, resourceName string, workload bool, crlPath string) (*security.SecretItem, error) {
 	var validRootCertBytes []byte
+	var crlBytes []byte
 	o := backoff.DefaultOption()
 	o.InitialInterval = sc.configOptions.FileDebounceDuration
 	b := backoff.NewExponentialBackOff(o)
@@ -615,6 +616,14 @@ func (sc *SecretManagerClient) generateRootCertFromExistingFile(rootCertPath, re
 		if len(errs) > 0 {
 			cacheLog.Errorf("failed to parse some certs from file %s: %v", rootCertPath, errs)
 		}
+		// The CRL is optional; if configured, it must be readable in order for the root
+		// cert secret to be considered valid, mirroring how the root cert itself is treated.
+		if crlPath != "" {
+			crlBytes, err = os.ReadFile(crlPath)
+			if err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), totalTimeout)
@@ -630,6 +639,7 @@ func (sc *SecretManagerClient) generateRootCertFromExistingFile(rootCertPath, re
 	return &security.SecretItem{
 		ResourceName: resourceName,
 		RootCert:     validRootCertBytes,
+		CRL:          crlBytes,
 	}, nil
 }
 
@@ -719,7 +729,7 @@ func (sc *SecretManagerClient) generateFileSecret(resourceName string) (bool, *s
 	// Default root certificate.
 	case resourceName == security.RootCertReqResourceName && sc.rootCertificateExist(cf.CaCertificatePath) && !outputToCertificatePath:
 		sdsFromFile = true
-		if sitem, err = sc.generateRootCertFromExistingFile(cf.CaCertificatePath, resourceName, true); err == nil {
+		if sitem, err = sc.generateRootCertFromExistingFile(cf.CaCertificatePath, resourceName, true, ""); err == nil {
 			// If retrieving workload trustBundle, then merge other configured trustAnchors in ProxyConfig
 			sitem.RootCert = sc.mergeTrustAnchorBytes(sitem.RootCert)
 			sc.addFileWatcher(cf.CaCertificatePath, resourceName)
@@ -734,7 +744,7 @@ func (sc *SecretManagerClient) generateFileSecret(resourceName string) (bool, *s
 	case resourceName == security.FileRootSystemCACert:
 		sdsFromFile = true
 		if sc.caRootPath != "" {
-			if sitem, err = sc.generateRootCertFromExistingFile(sc.caRootPath, resourceName, false); err == nil {
+			if sitem, err = sc.generateRootCertFromExistingFile(sc.caRootPath, resourceName, false, ""); err == nil {
 				sc.addFileWatcher(sc.caRootPath, resourceName)
 			}
 		} else {
@@ -748,8 +758,14 @@ func (sc *SecretManagerClient) generateFileSecret(resourceName string) (bool, *s
 		sdsFromFile = ok
 		switch {
 		case ok && cfg.IsRootCertificate():
-			if sitem, err = sc.generateRootCertFromExistingFile(cfg.CaCertificatePath, resourceName, false); err == nil {
+			if sitem, err = sc.generateRootCertFromExistingFile(cfg.CaCertificatePath, resourceName, false, cfg.CRLPath); err == nil {
 				sc.addFileWatcher(cfg.CaCertificatePath, resourceName)
+				if cfg.CRLPath != "" {
+					// Watch the CRL file under the same resourceName as the root cert, so a CRL-only
+					// change re-triggers generateFileSecret/toEnvoySecret and gets pushed to Envoy via
+					// the exact same fsnotify -> OnSecretUpdate -> SDS push pipeline used for root cert rotation.
+					sc.addFileWatcher(cfg.CRLPath, resourceName)
+				}
 			}
 		case ok && cfg.IsKeyCertificate():
 			if sitem, err = sc.generateKeyCertFromExistingFiles(cfg.CertificatePath, cfg.PrivateKeyPath, resourceName); err == nil {

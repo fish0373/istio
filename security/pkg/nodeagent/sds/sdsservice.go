@@ -311,14 +311,23 @@ func toEnvoySecret(s *security.SecretItem, caRootPath string, pkpConf *mesh.Priv
 			},
 		}
 
-		if features.EnableCACRL {
+		switch {
+		case len(s.CRL) > 0:
+			// A CRL was configured alongside this root certificate's SDS resource (e.g. DestinationRule/Gateway
+			// caCrl encoded via SdsCertificateConfig.CRLPath). It was read and fsnotify-watched together with
+			// the root cert in generateRootCertFromExistingFile, so it is delivered inline and auto-reloads
+			// exactly like the root cert does.
+			secretValidationContext.ValidationContext.Crl = &core.DataSource{
+				Specifier: &core.DataSource_InlineBytes{
+					InlineBytes: s.CRL,
+				},
+			}
+		case features.EnableCACRL && isCrlFileProvided():
 			// Check if the plugged-in CA CRL file is present and update the secretValidationContext accordingly.
-			if isCrlFileProvided() {
-				secretValidationContext.ValidationContext.Crl = &core.DataSource{
-					Specifier: &core.DataSource_Filename{
-						Filename: security.CACRLFilePath,
-					},
-				}
+			secretValidationContext.ValidationContext.Crl = &core.DataSource{
+				Specifier: &core.DataSource_Filename{
+					Filename: security.CACRLFilePath,
+				},
 			}
 		}
 

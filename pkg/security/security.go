@@ -303,6 +303,10 @@ type SecretItem struct {
 
 	RootCert []byte
 
+	// CRL is the PEM-encoded certificate revocation list associated with RootCert, if any.
+	// It is only populated for root certificate SecretItems.
+	CRL []byte
+
 	// ResourceName passed from envoy SDS discovery request.
 	// "ROOTCA" for root cert request, "default" for key/cert request.
 	ResourceName string
@@ -521,6 +525,9 @@ type SdsCertificateConfig struct {
 	CertificatePath   string
 	PrivateKeyPath    string
 	CaCertificatePath string
+	// CRLPath is the path to a certificate revocation list file associated with CaCertificatePath.
+	// It is only meaningful when CaCertificatePath is set.
+	CRLPath string
 }
 
 const (
@@ -535,12 +542,17 @@ func (s SdsCertificateConfig) GetResourceName() string {
 	return ""
 }
 
-// GetRootResourceName converts a SdsCertificateConfig to a string to be used as an SDS resource name for the root
+// GetRootResourceName converts a SdsCertificateConfig to a string to be used as an SDS resource name for the root.
+// When a CRLPath is also configured, it is encoded alongside the CA certificate path so that the CRL file
+// is tracked (and auto-reloaded) using the exact same SDS resource/file-watch as the root certificate.
 func (s SdsCertificateConfig) GetRootResourceName() string {
-	if s.IsRootCertificate() {
-		return "file-root:" + s.CaCertificatePath // Format: file-root:%s
+	if !s.IsRootCertificate() {
+		return ""
 	}
-	return ""
+	if s.CRLPath != "" {
+		return "file-root:" + s.CaCertificatePath + ResourceSeparator + s.CRLPath // Format: file-root:%s~%s
+	}
+	return "file-root:" + s.CaCertificatePath // Format: file-root:%s
 }
 
 // IsRootCertificate returns true if this config represents a root certificate config.
@@ -562,15 +574,19 @@ func SdsCertificateConfigFromResourceName(resource string) (SdsCertificateConfig
 		if len(split) != 2 {
 			return SdsCertificateConfig{}, false
 		}
-		return SdsCertificateConfig{split[0], split[1], ""}, true
+		return SdsCertificateConfig{CertificatePath: split[0], PrivateKeyPath: split[1]}, true
 	} else if after, ok := strings.CutPrefix(resource, "file-root:"); ok {
 		filesString := after
 		split := strings.Split(filesString, ResourceSeparator)
 
-		if len(split) != 1 {
+		switch len(split) {
+		case 1:
+			return SdsCertificateConfig{CaCertificatePath: split[0]}, true
+		case 2:
+			return SdsCertificateConfig{CaCertificatePath: split[0], CRLPath: split[1]}, true
+		default:
 			return SdsCertificateConfig{}, false
 		}
-		return SdsCertificateConfig{"", "", split[0]}, true
 	}
 	return SdsCertificateConfig{}, false
 }
@@ -580,5 +596,5 @@ func SdsCertificateConfigFromResourceNameForOSCACert(resource string) (SdsCertif
 	if resource == "" {
 		return SdsCertificateConfig{}, false
 	}
-	return SdsCertificateConfig{"", "", resource}, true
+	return SdsCertificateConfig{CaCertificatePath: resource}, true
 }

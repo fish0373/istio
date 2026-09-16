@@ -203,18 +203,16 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 		defaultValidationContext := &tls.CertificateValidationContext{
 			MatchSubjectAltNames: matchSAN,
 		}
-		if crl != "" {
-			defaultValidationContext.Crl = &core.DataSource{
-				Specifier: &core.DataSource_Filename{
-					Filename: crl,
-				},
-			}
-		}
 		if allowInsecure {
 			defaultValidationContext.TrustChainVerification = tls.CertificateValidationContext_ACCEPT_UNTRUSTED
 		}
+		// The CRL, like the CA cert, is a file mounted into the pod. Rather than embedding it as a static
+		// Filename DataSource (which Envoy never re-reads), encode it into the root cert's SDS resource name
+		// so node-agent reads, fsnotify-watches, and pushes it inline alongside the CA cert -- giving CRL the
+		// same auto-reload behavior as the trust bundle.
 		caRes := security.SdsCertificateConfig{
 			CaCertificatePath: caCert,
+			CRLPath:           crl,
 		}
 		tlsContext.ValidationContextType = &tls.CommonTlsContext_CombinedValidationContext{
 			CombinedValidationContext: &tls.CommonTlsContext_CombinedCertificateValidationContext{

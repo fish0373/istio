@@ -212,6 +212,7 @@ func constructUpstreamTLS(opts *buildClusterOpts, tls *networking.ClientTLSSetti
 		// serve them over SDS by reading the files.
 		res := security.SdsCertificateConfig{
 			CaCertificatePath: ptr.NonEmptyOrDefault(tls.CaCertificates, "system"),
+			CRLPath:           tls.GetCaCrl(),
 		}
 		// If CredentialName is not set fallback to file based approach
 		if mutual {
@@ -230,14 +231,11 @@ func constructUpstreamTLS(opts *buildClusterOpts, tls *networking.ClientTLSSetti
 		if !res.IsRootCertificate() || tls.GetInsecureSkipVerify().GetValue() {
 			tlsContext.CommonTlsContext.ValidationContextType = &tlsv3.CommonTlsContext_ValidationContext{}
 		} else {
+			// Note: the CRL (res.CRLPath, from tls.GetCaCrl()) is intentionally not embedded here as a static
+			// Filename DataSource. It is instead encoded into res.GetRootResourceName() below, so node-agent
+			// reads, fsnotify-watches, and pushes it inline alongside the CA cert -- giving CRL the same
+			// auto-reload behavior as the trust bundle, instead of requiring a proxy restart to pick up changes.
 			defaultValidationContext := &tlsv3.CertificateValidationContext{MatchSubjectAltNames: util.StringToExactMatch(tls.SubjectAltNames)}
-			if tls.GetCaCrl() != "" {
-				defaultValidationContext.Crl = &core.DataSource{
-					Specifier: &core.DataSource_Filename{
-						Filename: tls.GetCaCrl(),
-					},
-				}
-			}
 			tlsContext.CommonTlsContext.ValidationContextType = &tlsv3.CommonTlsContext_CombinedValidationContext{
 				CombinedValidationContext: &tlsv3.CommonTlsContext_CombinedCertificateValidationContext{
 					DefaultValidationContext:         defaultValidationContext,
