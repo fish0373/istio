@@ -209,10 +209,20 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 		// The CRL, like the CA cert, is a file mounted into the pod. Rather than embedding it as a static
 		// Filename DataSource (which Envoy never re-reads), encode it into the root cert's SDS resource name
 		// so node-agent reads, fsnotify-watches, and pushes it inline alongside the CA cert -- giving CRL the
-		// same auto-reload behavior as the trust bundle.
+		// same auto-reload behavior as the trust bundle. This requires a CA cert path to attach it to, and a
+		// node-agent that understands the combined resource format (see CrlSupportedByProxy); otherwise fall
+		// back to the pre-auto-reload static Filename CRL rather than silently dropping it.
+		crlInSDS := crl != "" && caCert != "" && CrlSupportedByProxy(proxy.IstioVersion)
+		if crl != "" && !crlInSDS {
+			defaultValidationContext.Crl = &core.DataSource{
+				Specifier: &core.DataSource_Filename{Filename: crl},
+			}
+		}
 		caRes := security.SdsCertificateConfig{
 			CaCertificatePath: caCert,
-			CRLPath:           crl,
+		}
+		if crlInSDS {
+			caRes.CRLPath = crl
 		}
 		tlsContext.ValidationContextType = &tls.CommonTlsContext_CombinedValidationContext{
 			CombinedValidationContext: &tls.CommonTlsContext_CombinedCertificateValidationContext{
@@ -221,6 +231,18 @@ func ApplyToCommonTLSContext(tlsContext *tls.CommonTlsContext, proxy *model.Prox
 			},
 		}
 	}
+}
+
+// CrlSupportedByProxy reports whether the proxy's node-agent can be expected to understand the
+// combined "file-root:<ca>~<crl>" SDS resource (SdsCertificateConfig.CRLPath), added in Istio
+// 1.32. An unknown/unset version is treated as NOT supporting it -- matching every other version
+// gate in this package group (see e.g. pilot/pkg/networking/core/tracing.go's
+// "proxy.IstioVersion != nil && proxy.VersionGreaterOrEqual(...)" pattern) -- since asking an old
+// or unidentified node-agent for a resource format it doesn't recognize fails the SDS fetch
+// outright, whereas assuming "not supported" only costs the (already pre-existing) lack of CRL
+// auto-reload for that one connection.
+func CrlSupportedByProxy(v *model.IstioVersion) bool {
+	return v != nil && v.Compare(&model.IstioVersion{Major: 1, Minor: 32}) >= 0
 }
 
 // constructSdsSecretConfig allows passing a file name and a fallback.

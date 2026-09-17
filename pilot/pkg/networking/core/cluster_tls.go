@@ -175,10 +175,10 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 			setAutoSniAndAutoSanValidation(c, tls)
 		}
 	case networking.ClientTLSSettings_SIMPLE:
-		tlsContext, err = constructUpstreamTLS(opts, tls, c, false)
+		tlsContext, err = cb.constructUpstreamTLS(opts, tls, c, false)
 
 	case networking.ClientTLSSettings_MUTUAL:
-		tlsContext, err = constructUpstreamTLS(opts, tls, c, true)
+		tlsContext, err = cb.constructUpstreamTLS(opts, tls, c, true)
 	}
 	if err != nil {
 		return nil, err
@@ -190,7 +190,7 @@ func (cb *ClusterBuilder) buildUpstreamClusterTLSContext(opts *buildClusterOpts,
 	return tlsContext, nil
 }
 
-func constructUpstreamTLS(opts *buildClusterOpts, tls *networking.ClientTLSSettings, c *clusterWrapper, mutual bool) (*tlsv3.UpstreamTlsContext, error) {
+func (cb *ClusterBuilder) constructUpstreamTLS(opts *buildClusterOpts, tls *networking.ClientTLSSettings, c *clusterWrapper, mutual bool) (*tlsv3.UpstreamTlsContext, error) {
 	tlsContext := &tlsv3.UpstreamTlsContext{
 		CommonTlsContext: defaultUpstreamCommonTLSContext(),
 		Sni:              tls.Sni,
@@ -212,7 +212,13 @@ func constructUpstreamTLS(opts *buildClusterOpts, tls *networking.ClientTLSSetti
 		// serve them over SDS by reading the files.
 		res := security.SdsCertificateConfig{
 			CaCertificatePath: ptr.NonEmptyOrDefault(tls.CaCertificates, "system"),
-			CRLPath:           tls.GetCaCrl(),
+		}
+		// The combined root+CRL SDS resource format was added in Istio 1.32; an older node-agent
+		// only understands the plain one-part "file-root:<ca>" resource. See
+		// sec_model.CrlSupportedByProxy for why an unknown/unset cb.proxyVersion is treated as "no".
+		crlInSDS := tls.GetCaCrl() != "" && sec_model.CrlSupportedByProxy(cb.proxyVersion)
+		if crlInSDS {
+			res.CRLPath = tls.GetCaCrl()
 		}
 		// If CredentialName is not set fallback to file based approach
 		if mutual {
@@ -231,11 +237,17 @@ func constructUpstreamTLS(opts *buildClusterOpts, tls *networking.ClientTLSSetti
 		if !res.IsRootCertificate() || tls.GetInsecureSkipVerify().GetValue() {
 			tlsContext.CommonTlsContext.ValidationContextType = &tlsv3.CommonTlsContext_ValidationContext{}
 		} else {
-			// Note: the CRL (res.CRLPath, from tls.GetCaCrl()) is intentionally not embedded here as a static
-			// Filename DataSource. It is instead encoded into res.GetRootResourceName() below, so node-agent
-			// reads, fsnotify-watches, and pushes it inline alongside the CA cert -- giving CRL the same
-			// auto-reload behavior as the trust bundle, instead of requiring a proxy restart to pick up changes.
+			// When crlInSDS, the CRL (res.CRLPath) rides along with the CA cert's own SDS resource
+			// (res.GetRootResourceName() below) instead of being embedded here as a static Filename
+			// DataSource, so node-agent fsnotify-watches and auto-reloads it like the CA cert. When
+			// the proxy isn't confirmed to support that combined format, fall back to the
+			// pre-auto-reload static Filename CRL rather than silently dropping it.
 			defaultValidationContext := &tlsv3.CertificateValidationContext{MatchSubjectAltNames: util.StringToExactMatch(tls.SubjectAltNames)}
+			if tls.GetCaCrl() != "" && !crlInSDS {
+				defaultValidationContext.Crl = &core.DataSource{
+					Specifier: &core.DataSource_Filename{Filename: tls.GetCaCrl()},
+				}
+			}
 			tlsContext.CommonTlsContext.ValidationContextType = &tlsv3.CommonTlsContext_CombinedValidationContext{
 				CombinedValidationContext: &tlsv3.CommonTlsContext_CombinedCertificateValidationContext{
 					DefaultValidationContext:         defaultValidationContext,

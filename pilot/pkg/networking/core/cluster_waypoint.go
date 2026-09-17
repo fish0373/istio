@@ -245,7 +245,7 @@ func (cb *ClusterBuilder) buildWaypointInboundVIPCluster(
 	}
 	transportSocket := util.RawBufferTransport()
 	disableBaggageDiscovery := false
-	if tlsContext := buildWaypointTLSContext(opts, tls); tlsContext != nil {
+	if tlsContext := cb.buildWaypointTLSContext(opts, tls); tlsContext != nil {
 		transportSocket = &core.TransportSocket{
 			Name:       wellknown.TransportSocketTLS,
 			ConfigType: &core.TransportSocket_TypedConfig{TypedConfig: protoconv.MessageToAny(tlsContext)},
@@ -284,7 +284,7 @@ func (cb *ClusterBuilder) buildWaypointInboundVIPCluster(
 	return localCluster.build()
 }
 
-func buildWaypointTLSContext(opts *buildClusterOpts, tls *networking.ClientTLSSettings) *tlsv3.UpstreamTlsContext {
+func (cb *ClusterBuilder) buildWaypointTLSContext(opts *buildClusterOpts, tls *networking.ClientTLSSettings) *tlsv3.UpstreamTlsContext {
 	if tls == nil {
 		return nil
 	}
@@ -299,10 +299,10 @@ func buildWaypointTLSContext(opts *buildClusterOpts, tls *networking.ClientTLSSe
 		// not supported (?)
 		return nil
 	case networking.ClientTLSSettings_SIMPLE:
-		tlsContext, err = constructUpstreamTLS(opts, tls, opts.mutable, false)
+		tlsContext, err = cb.constructUpstreamTLS(opts, tls, opts.mutable, false)
 
 	case networking.ClientTLSSettings_MUTUAL:
-		tlsContext, err = constructUpstreamTLS(opts, tls, opts.mutable, true)
+		tlsContext, err = cb.constructUpstreamTLS(opts, tls, opts.mutable, true)
 	}
 	if err != nil {
 		log.Errorf("failed to build Upstream TLSContext: %s", err.Error())
